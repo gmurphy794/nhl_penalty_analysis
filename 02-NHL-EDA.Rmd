@@ -1,0 +1,453 @@
+---
+title: "NHL EDA"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+
+#Load Libraries
+library(tidyverse)
+library(dplyr)
+library(lubridate)
+library(xlsx)
+
+#Load Data
+path = getwd()
+load('../data/penalty_data.Rdata')
+```
+
+
+
+```{r}
+### Getting Data Totals
+#Date Range
+min(as.Date(penalty_data$dateTime))
+max(as.Date(penalty_data$dateTime))
+
+
+t_seasons <- n_distinct(penalty_data$season)
+t_games <- n_distinct(penalty_data$game_id)
+t_penalties <- n_distinct(penalty_data$play_id)
+avg_penalties <- t_penalties/t_games
+```
+
+
+
+```{r}
+### Distribution of Total Penalty Minutes per Game
+penalty_data %>% filter(official_type == 'Referee' & playerType =='PenaltyOn') %>% 
+  group_by(game_id) %>% 
+  summarise(total_min = sum(penaltyMinutes) / 2) %>% #Divide by 2 to avoid double counting
+  ggplot() +
+  geom_histogram(mapping = aes(x = total_min), bins = 50)
+```
+
+
+
+```{r}
+#Getting totals per game
+per_game <- penalty_data %>% 
+  filter(official_type == 'Referee' & playerType == 'PenaltyOn') %>% 
+  group_by(game_id) %>% 
+  summarise(total_min = sum(penaltyMinutes) / 2,
+            n_penalties = n_distinct(play_id))
+
+
+max_pm <- max(per_game$total_min)
+min_pm <- min(per_game$total_min)
+avg_pm <- mean(per_game$total_min)
+sd_pm <- sd(per_game$total_min)
+med_pm <- median(per_game$total_min)
+
+max_p <- max(per_game$n_penalties)
+min_p <- min(per_game$n_penalties)
+avg_p <- mean(per_game$n_penalties)
+sd_p <- sd(per_game$n_penalties)
+med_p <- median(per_game$n_penalties)
+
+per_games %>% summary.table(total_min)
+
+upper_bound <- avg_pm + 3 * sd_pm
+
+#Removing outliers from penalty data
+non_outlier <- per_game %>% 
+  filter(total_min < upper_bound)
+penalty_data <- penalty_data %>% 
+  inner_join(non_outlier[, 'game_id'])
+
+#Adjusted Totals
+t_games_adjusted <- n_distinct(non_outlier$game_id)
+max_pm_adjusted <- max(non_outlier$total_min)
+min_pm_adjusted <- min(non_outlier$total_min)
+avg_pm_adjusted <- mean(non_outlier$total_min)
+sd_pm_adjusted <- sd(non_outlier$total_min)
+med_pm_adjusted <- median(non_outlier$total_min)
+
+max_p_adjusted <- max(non_outlier$n_penalties)
+min_p_adjusted <- min(non_outlier$n_penalties)
+avg_p_adjusted <- mean(non_outlier$n_penalties)
+sd_p_adjusted <- sd(non_outlier$n_penalties)
+med_p_adjusted <- median(non_outlier$n_penalties)
+
+```
+
+
+```{r}
+###Penalty Minutes Against and For each Team
+
+#Combining Arizona and Phoenix
+penalty_data$team_against[penalty_data$team_against == 'PHX'] <- 'ARI'
+penalty_data$team_for[penalty_data$team_for == 'PHX'] <- 'ARI'
+
+
+per_team_against <- penalty_data %>% 
+  filter(playerType == 'PenaltyOn') %>% 
+  select(play_id, game_id, periodTime, team_against, penaltyMinutes, player_id) %>% 
+  distinct() %>% 
+  group_by(team_against, game_id) %>% 
+  summarise(penaltyMinutes = sum(penaltyMinutes)) %>% 
+  group_by(team_against) %>% 
+  summarise(total_min = sum(penaltyMinutes),
+            games = n_distinct(game_id),
+            min_per_game = mean(penaltyMinutes),
+            std_dev = sd(penaltyMinutes))
+
+per_team_for <- penalty_data %>% 
+  filter(playerType=='DrewBy') %>% 
+  select(play_id, game_id, periodTime, team_for, penaltyMinutes, player_id) %>% 
+  distinct() %>% 
+  group_by(team_for, game_id) %>% 
+  summarise(penaltyMinutes = sum(penaltyMinutes)) %>% 
+  group_by(team_for) %>% 
+  summarise(total_min = sum(penaltyMinutes),
+            games = n_distinct(game_id),
+            min_per_game = mean(penaltyMinutes),
+            std_dev = sd(penaltyMinutes))
+
+View(per_team_against)
+View(per_team_for)
+
+```
+
+
+```{r}
+###Penalty Minutes per Official
+#Standardizing Official Names
+penalty_data$official_name <- str_to_title(penalty_data$official_name)
+penalty_data$official_name <- str_trim(penalty_data$official_name)
+penalty_data$official_name[penalty_data$official_name == 'Justin Stpierre'] <- 'Justin St. Pierre'
+penalty_data$official_name[penalty_data$official_name == 'Shick'] <-  'Rob Shick'
+penalty_data$official_name[penalty_data$official_name == 'Degrace'] <- 'Bernard Degrace'
+penalty_data$official_name[penalty_data$official_name == 'Warren'] <- 'Dean Warren'
+penalty_data$official_name[penalty_data$official_name == 'Tj Luxmore'] <- 'Thomas John Luxmore'
+penalty_data$official_name[penalty_data$official_name == 'Francois St-Laurent' |
+                            penalty_data$official_name == 'Francois Stlaurent'
+                           ] <- 'Francois St. Laurent'
+penalty_data$official_name[penalty_data$official_name == 'Don Vanmassenhoven'] <- 'Don Van Massenhoven'
+penalty_data$official_name[penalty_data$official_name == 'Mick Mcgeough'] <- 'Michael Mcgeough'
+penalty_data$official_name[penalty_data$official_name == 'Leggo'] <- 'Mike Leggo'
+penalty_data$official_name[penalty_data$official_name == 'Larue'] <- 'Dennis Larue'
+
+
+per_official <- penalty_data %>% 
+  filter(playerType == 'PenaltyOn' & official_type == 'Referee' ) %>% 
+  select(play_id, game_id, periodTime, official_name, penaltyMinutes, player_id) %>% 
+  distinct() %>% 
+  group_by(official_name) %>% 
+  summarise(total_min = sum(penaltyMinutes),
+            games = n_distinct(game_id),
+            min_per_game = total_min/games,
+            std_dev = sd(penaltyMinutes)) %>% 
+  filter(games > 73)       #Only want officials that have reffed a full season's worth of games
+
+#Total number of officials in dataset
+t_officials <- n_distinct(per_official$official_name)
+```
+
+
+
+```{r}
+### Seasonal Trend
+per_season <- penalty_data %>% 
+  filter(official_type == 'Referee' & playerType == 'PenaltyOn') %>%
+  select(play_id, game_id, periodTime, team_against, penaltyMinutes, player_id, season) %>% 
+  distinct() %>% 
+  mutate(season = as.factor(season)) %>% 
+  group_by(season) %>% 
+  summarise(total_min = sum(penaltyMinutes),
+            penalties = n_distinct(play_id),
+            games = n_distinct(game_id),
+            min_per_game = total_min / games,
+            pen_per_game = penalties / games)
+
+
+#Penalties per season
+per_season %>% ggplot() +
+  geom_col(mapping = aes(x = season, y = min_per_game), fill = 'deepskyblue4') +
+  geom_line(mapping = aes(label = 'Graph_Label', x = season, y = pen_per_game), group=1, color = 'red') +
+  scale_color_manual(values = 'Total Penalties') +
+  theme(axis.text.x = element_text(angle = -45, vjust = -1)) +
+  labs(title = 'Pentalty Minutes per Game per Season', x = 'Season', y = 'Total')
+```
+
+
+```{r}
+###Per_team_per_season
+per_team_per_season <- penalty_data %>% 
+  filter(playerType == 'PenaltyOn') %>% 
+  select(play_id, game_id, periodTime, team_against, penaltyMinutes, player_id, season) %>% 
+  distinct() %>% 
+  group_by(team_against, season) %>% 
+  summarise(total_min = sum(penaltyMinutes),
+            games = n_distinct(game_id),
+            min_per_game = total_min/games)
+
+per_team_per_season %>% arrange(desc(min_per_game)) %>% 
+  head(10) %>% #
+  mutate(team_seas = 
+            paste(team_against, ' ', str_sub(as.character(season),3,4), '-', 
+                   str_sub(as.character(season),7,8))) %>% 
+  ungroup() %>% 
+  mutate(season = as.factor(season)) %>% 
+  mutate(team_seas = fct_reorder(team_seas, desc(min_per_game))) %>% 
+  ggplot(mapping = aes(x = team_seas, y = min_per_game, fill = season)) +
+  geom_col(fill = 'steelblue') +
+  geom_hline(mapping = aes(yintercept = mean(per_team_per_season$min_per_game))) +
+  geom_text(aes(label = round(min_per_game, 2)), vjust = -.4) +
+  ylim(0,20) +
+  theme(axis.text.x = element_text(angle = -45, vjust = -1)) + 
+  labs(title = 'Pentalty Minutes per Game by Team and Season', x = 'Team and Season', y = 'Penalty Minutes Per Game')
+
+
+max_per_season <- per_team_per_season %>% 
+  group_by(season) %>% 
+  top_n(1, min_per_game)
+```
+
+
+```{r}
+###Penalty For and Against per Team per Official
+
+#Changing column names
+per_team_against <- per_team_against %>% 
+  rename(team_min_per_game = min_per_game)
+per_team_for <- per_team_for %>% 
+  rename(team_min_per_game = min_per_game)
+
+per_official_against <- penalty_data %>% 
+  filter(playerType == 'PenaltyOn' & official_type == 'Referee' ) %>% 
+  select(play_id, game_id, season, periodTime, team_against, official_name, penaltyMinutes, player_id) %>% 
+  distinct() %>% 
+  group_by(official_name, team_against) %>% 
+  summarise(total_min = sum(penaltyMinutes),
+            games = n_distinct(game_id),
+            seasons = n_distinct(season),
+            min_per_game = total_min/games) %>% 
+            left_join(per_team_against[, c('team_against','team_min_per_game', 'std_dev')], 
+                      by = 'team_against') %>% 
+  mutate(abs_diff = min_per_game - team_min_per_game, std_diff = abs_diff/std_dev,
+         ratio = min_per_game/team_min_per_game) %>% 
+  inner_join(per_official[, 'official_name']) %>% 
+  filter(games > 6)
+
+write.xlsx(as.data.frame(per_official_against), '../results/per_official_against.xlsx')
+
+
+per_official_for <- penalty_data %>% 
+  filter(playerType == 'DrewBy' & official_type == 'Referee' ) %>% 
+  select(play_id, game_id, season, periodTime, team_for, official_name, penaltyMinutes, player_id) %>% 
+  distinct() %>% 
+  group_by(official_name, team_for) %>% 
+  summarise(total_min = sum(penaltyMinutes),
+            games = n_distinct(game_id),
+            seasons = n_distinct(season),
+            min_per_game = total_min/games) %>% 
+            inner_join(per_team_for[, c('team_for','team_min_per_game', 'std_dev')], 
+                      by = 'team_for') %>% 
+  mutate(abs_diff = min_per_game - team_min_per_game, std_diff = abs_diff/std_dev,
+         ratio = min_per_game / team_min_per_game) %>% 
+  inner_join(per_official[, 'official_name']) %>% 
+  filter(games > 6)
+
+write.xlsx(as.data.frame(per_official_for), '../results/per_official_for.xlsx')
+
+max_team_official <- per_official_per_team %>% 
+  group_by(team_against) %>% 
+  top_n(1, min_per_game)
+```
+
+```{r}
+### Teams with most average Penalty Minutes per Game
+
+avg_pm_adjusted = mean(non_outlier$total_min)
+
+per_team_against %>% top_n(10, team_min_per_game)  %>% 
+  mutate(team_against = fct_reorder(team_against, desc(team_min_per_game))) %>% 
+  ggplot(mapping = aes(x = team_against, y = team_min_per_game)) +
+  geom_col(fill = 'steelblue') +
+  geom_hline(mapping = aes(yintercept = avg_pm_adjusted/2)) +
+  geom_text(aes(label = round(team_min_per_game, 2)), vjust = -.4) +
+  ylim(0,15) +
+  labs(title = 'Pentalty Minutes per Game', x = 'Team', y = 'Penalty Minutes Per Game')
+```
+
+
+```{r}
+###Top 5 Teams Penalties Against
+
+per_official_against %>%  
+  arrange(desc(ratio)) %>% 
+  pivot_longer(c('min_per_game', 'team_min_per_game'), 
+               names_to = 'type', values_to = 'minutes') %>% 
+  head(10) %>% 
+  mutate(team_against = fct_reorder(team_against, desc(ratio))) %>% 
+  ggplot(mapping = aes(x = team_against, y = minutes)) +
+  geom_col(aes(fill = type)) +
+  geom_text(aes(label = round(minutes, 2)), vjust = 3) +
+  scale_fill_discrete(labels = c('With Official in Question', 'Team Average')) +
+  geom_hline(mapping = aes(yintercept = avg_pm_adjusted/2,)) +
+  labs(title = "Average Penalty Minutes Against Per Game", x = 'Team', y = 'Penalty Minutes per Game')
+
+
+
+```
+
+
+
+```{r}
+###Top 5 Teams Penalties For
+
+per_official_for %>%  
+  arrange(desc(ratio)) %>% 
+  pivot_longer(c('min_per_game', 'team_min_per_game'), 
+               names_to = 'type', values_to = 'minutes') %>% 
+  head(10) %>% 
+  mutate(team_for = fct_reorder(team_for, desc(ratio))) %>% 
+  ggplot(mapping = aes(x = team_for, y = minutes)) +
+  geom_col(aes(fill = type)) +
+  geom_text(aes(label = round(minutes, 2)), vjust = 2) +
+  scale_fill_discrete(labels = c('With Official in Question', 'Team Average')) +
+  geom_hline(mapping = aes(yintercept = avg_pm_adjusted / 2)) +
+  labs(title = "Average Penalty Minutes For Per Game", x = 'Team', y = 'Penalty Minutes per Game')
+
+
+```
+
+
+```{r}
+```
+
+
+```{r}
+###Box plots of referees in quesiton for penalties against
+
+per_official_against %>% 
+  filter(official_name %in% c('Craig Spada', 'Jay Sharrers', 'Mark Faucette', 'Scott Zelkin', 'Shane Heyer')) %>% 
+  ggplot(mapping = aes(x = official_name, y = min_per_game)) +
+    geom_boxplot() +
+  labs(title = "Average Penalty Minutes Against Per Game", x = 'Official Name', y = 'Penalty Minutes per Game')
+```
+
+
+```{r}
+###Box plots of referees in quesiton for penalties for
+
+per_official_for %>% 
+  filter(official_name %in% c('Craig Spada', 'Jay Sharrers', 'Mark Faucette', 'Scott Zelkin', 'Shane Heyer')) %>% 
+  ggplot(mapping = aes(x = official_name, y = min_per_game)) +
+    geom_boxplot() +
+  labs(title = "Average Penalty Minutes For Per Game", x = 'Official Name', y = 'Penalty Minutes per Game')
+```
+
+
+
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+
+
+```{r}
+###Home_Away Analsysis
+penalty_data$h_a <- ifelse(penalty_data$team_against == penalty_data$home_team, 'H', 'A')
+
+official_home_away <- penalty_data %>% 
+  filter(playerType == 'PenaltyOn' & official_type == 'Referee' ) %>% 
+  select(play_id, game_id, official_name, penaltyMinutes, player_id,h_a) %>% 
+  distinct() %>% 
+  group_by(official_name, h_a) %>% 
+  summarise(games = n_distinct(game_id),
+            minutes = sum(penaltyMinutes),
+            min_per_game = minutes / games) %>% 
+  inner_join(per_official[, 'official_name'], by = 'official_name') %>% 
+  select(official_name, h_a, min_per_game) %>% 
+  pivot_wider(names_from = h_a, values_from = min_per_game) %>% 
+  mutate(ratio = A/H)
+  
+
+home_away_pen <- penalty_data %>% 
+  filter(playerType == 'PenaltyOn') %>% 
+  select(play_id, game_id, penaltyMinutes, h_a) %>% 
+  distinct() %>% 
+  group_by(h_a) %>% 
+  summarise(total_min = sum(penaltyMinutes),
+            min_per_game = total_min / n_distinct(game_id),
+            std_dev = sd(penaltyMinutes))
+  
+h_min_per_game <- home_away_pen$min_per_game[home_away_pen$h_a == 'H']
+a_min_per_game <- home_away_pen$min_per_game[home_away_pen$h_a == 'A']
+
+official_home_away %>% arrange(desc(ratio)) %>% 
+  head(10) %>% 
+  ungroup() %>% 
+  mutate(official_name = fct_reorder(official_name, ratio)) %>% 
+  ggplot(mapping = aes(x = official_name, y = ratio)) +
+  geom_col(fill = 'steelblue') +
+  geom_hline(yintercept = a_min_per_game / h_min_per_game) +
+  geom_text(aes(label = round(ratio, 2)), hjust = -.1) +
+  ylim(0,2) +
+  labs(title = 'Away to Home Penalty Minutes per Official', 
+       x = 'Official Name', 
+       y = 'Away to Home Penalty Minutes') +
+  coord_flip() 
+
+
+  #theme(axis.text.x = element_text(angle = -45, vjust = 0, hjust = .5))
+
+```
+
+
+
+```{r}
+###Distribution of penalty per player
+per_player <- penalty_data %>% 
+  filter(official_type == 'Referee' & playerType=='PenaltyOn') %>% 
+  group_by(player_id) %>% 
+  summarise(total_min = sum(penaltyMinutes)/2)
+
+#Per Player Totals
+max_pm_pl <- max(per_player$total_min)
+min_pm_pl <- min(per_player$total_min)
+avg_pm_pl <- mean(per_player$total_min)
+
+per_player 
+```
+
